@@ -5772,19 +5772,35 @@ function show_theentities() {
 		local OLDIFS="$IFS"
 		IFS="
 	"
+		ENT_INDEX=0
 		# Find the plugins
 		for i in `find . -maxdepth 1 -iregex './[a-z0-9].*' | sort`; do
 			# This could match the directory name (e.g. "akismet" from plugin akismet/akismet.php) or the file name (e.g. hello.php for "Hello Dolly")
 			PLUGDIR=`echo "$i" | cut -d/ -f2`
+			if (( $ENT_INDEX < 10 )); then
+				ENT_NUM="0${ENT_INDEX}"
+			else
+				ENT_NUM="$ENT_INDEX"
+			fi
 			# Plugins in directories
 			if [[ -d $i ]]; then
 				# Enter the plugin's directory
 				ws_pushd "$i"
+				if [[ $(showentity_thisdir "$SHOWONLY") ]]; then
+					# Print entity index number
+					echo -n "$ENT_NUM  "
+					ENT_INDEX=$((ENT_INDEX+1))
+				fi
 				# See what's in this directory
 				showentity_thisdir "$SHOWONLY"
 				ws_popd
 			# Plugins in files
 			elif [[ $METAMODE = "plugin" && $i =~ .*\.php$ ]]; then
+				if [[ $(showentity_thisdir "$SHOWONLY" file) ]]; then
+					# Print entity index number
+					echo -n "$ENT_NUM  "
+					ENT_INDEX=$((ENT_INDEX+1))
+				fi
 				showentity_thisdir "$SHOWONLY" file
 			else
 				[[ $DEBUG -ge 1 ]] && ws_event_notice "$i: Unknown entity found in ${METAMODE}s directory"
