@@ -1,13 +1,22 @@
 #!/bin/bash
 # Note - if you change that path to bash, then you should also change it in the configuration section below
 
-VERSION="1.3.140 (2017-12-01)"
+VERSION="1.3.136 (2016-06-18)"
 
 # (c) David Anderson 2011-
+# With modifications by mikeybeck (2016-2017, 2020)
 #
-# https://github.com/DavidAnderson684/wordshell
+# http://wordshell.net / contact@wordshell.net
 #
-# Licence: https://github.com/DavidAnderson684/wordshell/blob/master/LICENSE
+# Licence: http://wordshell.net/support/manual/wordshell-licence/
+#
+# Please do share your patches with me. I prefer then in "diff -uNr" format (please also specify the version against which you are patching).
+
+# mikeybeck's mods:
+# 05/16: Addition of --no-maintenance mode, which prevents site from going into maintenance mode when updating plugins.  (not recommended but y'know...)
+# 06/16: Made remote controller local only so I can make changes (no longer fetches from Amazon s3)
+# 06/17: Added numerical index to plugin list to make selection/specification easier
+
 
 # * * * BEGIN CONFIGURATION * * * #
 
@@ -89,99 +98,23 @@ EXCLUDE_GLOB_FTP="wponlinebackup/tmp/*"
 # Note that if you do not have rsync installed then this next line is totally ignored
 EXCLUDE_GLOB_RSYNC="wponlinebackup/tmp/*"
 
-# Where to fetch a wp-wordshell-controller.php script of sufficiently high protocol from
+# Where to fetch a wp-wordshell-controller.php script of sufficiently high protocol from (locally)
 REMOTE_MANAGER_MINIMUM_PROTOCOL=22
-REMOTE_MANAGER_FROM="https://wordshellnet.s3.amazonaws.com/wp-wordshell-controller.php.$REMOTE_MANAGER_MINIMUM_PROTOCOL"
+REMOTE_MANAGER_FROM="$WORKDIR/wp-wordshell-controller.php"
 
 SELINUX=0
 [[ $UNAME = "Linux" ]] && selinuxenabled 2>/dev/null && SELINUX=1
 
-# sed -i is not part of POSIX; an -i option is present on BSDs but works differently to GNU.
-# Must provide the filename as $2
-function ws_sed_i() {
-	if [[ $UNAME = "Linux" || $UNAME =~ ^Cygwin || $UNAME =~ ^CYGWIN ]]; then
-		sed -i "$@"
-	elif [[ $UNAME = "FreeBSD" || $UNAME = "Darwin" ]]; then
-		sed -i "" "$@"
-	else
-		local SED_TMP=`mktemp`
-		sed "$@" >$SED_TMP
-		cat $SED_TMP >"$2"
-		rm -f $SED_TMP
-	fi
-}
+source ws_sed_i.sh
 
-# Now a function to recursively set directory ownership, recursively, based upon the owner of a specified file. Hopefully again this will "just work", but if not please let us know and send us the output of /bin/uname
-
-function setownership() {
-# Input: $1 = the reference file
-# Input: $2 = the directory to set ownership upon
-# Note - where you specify a directory finishing with /, this routine will not touch that directory itself (or dotfiles inside it)
-if [[ $UNAME = "Linux" || $UNAME =~ ^Cygwin || $UNAME =~ ^CYGWIN ]]; then
-	# GNU style
-	if [[ $2 =~ \/$ ]]; then
-		[[ $DEBUG -ge 1 ]] && ws_event_debug "setownership: GNU: contents: $2"
-		chown -R --reference="$1" "$2"/*
-		if [[ $SELINUX -eq 1 ]]; then
-			if [[ $DEBUG -ge 1 ]]; then
-				ws_event_debug "setownership: SELinux chcon: contents: $2"
-				chcon -R --reference="$1" "$2"/*
-			else
-				chcon -R --reference="$1" "$2"/* 2>/dev/null
-			fi
-		fi
-	else
-		[[ $DEBUG -ge 1 ]] && ws_event_debug "setownership: GNU: $2"
-		chown -R --reference="$1" "$2"
-		if [[ $SELINUX -eq 1 ]]; then
-			if [[ $DEBUG -ge 1 ]]; then
-				ws_event_debug "setownership: SELinux chcon: $2"
-				chcon -R --reference="$1" "$2"
-			else
-				chcon -R --reference="$1" "$2" 2>/dev/null
-			fi
-		fi
-	fi
-else
-	# Should work on some BSDs (including Mac OS X)
-	local REFOWNER=`stat -f %u "$1"`
-	local REFGROUP=`stat -f %g "$1"`
-	if [[ $2 =~ \/$ ]]; then
-		[[ $DEBUG -ge 1 ]] && ws_event_debug "setownership: BSD: contents: $2"
-		chown -R $REFOWNER:$REFGROUP "$2"/*
-	else
-		[[ $DEBUG -ge 1 ]] && ws_event_debug "setownership: BSD: $2"
-		chown -R $REFOWNER:$REFGROUP "$2"
-	fi
-fi
-}
+source setownership.sh
 
 # We want to know if date will accept the --date switch (GNU coreutils), or if we can use php to do the same; this unlocks functionality for parsing user-supplied dates
 CAN_STRTOTIME=0; GNU_DATE=0
 $DATE --version 2>/dev/null | grep -q GNU && GNU_DATE=1
 [[ $GNU_DATE -eq 1 || -n $PHP ]] && CAN_STRTOTIME=1
 
-function ws_strtotime() {
-	if [[ $GNU_DATE -eq 1 ]]; then
-		date --date="$1" +%s
-	elif [[ -n $PHP ]]; then
-		$PHP -r "print strtotime(\"$1\");"
-	else
-		echo "error";
-	fi
-}
-
-# The follow function converts UNIX (epoch) times into the given format. The reason for its existence is because --date=@ is not part of POSIX.
-# Input: $1 = epoch time, $2 = output format (accepted by the system's date binary)
-function ws_date_from_epoch() {
-	if [[ ${BASH_VERSINFO[0]} -ge 4 && ${BASH_VERSINFO[1]} -ge 2 ]]; then
-		printf "%($2)T" "$1"
-	elif [[ $GNU_DATE -eq 1 ]]; then
-		date --date=@"$1" +"$2"
-	else
-		date -r "$1" +"$2"
-	fi
-}
+source ws_str_date.sh
 
 # The following is optional; it aims to obtain terminal codes to turn on and off bold output
 BOLD=""
@@ -206,73 +139,9 @@ DEFAULT_CONTENTDIR=wp-content
 WORDSHELL_PID=$$
 CONTENTDIR=$DEFAULT_CONTENTDIR
 
-# The next function (only) is under the MIT licence
-# http://blog.yjl.im/2012/01/printing-out-call-stack-in-bash.html
-function ws_callstack() {
-  local i=0
-  local FRAMES=${#BASH_LINENO[@]}
-  # FRAMES-2 skips main, the last one in arrays
-  for ((i=FRAMES-2; i>=0; i--)); do
-    echo '  File' \"${BASH_SOURCE[i+1]}\", line ${BASH_LINENO[i]}, in ${FUNCNAME[i+1]}
-    # Grab the source code of the line
-    sed -n "${BASH_LINENO[i]}{s/^/    /;p}" "${BASH_SOURCE[i+1]}"
-  done
-}
+source ws_callstack_logger.sh
 
-function ws_logger() {
-
-	# Code everywhere calls into here (eventually) to log an event.
-	# The task here is to decide what to do with it. This can be outputting on the screen, logging, syslog, etc.
-
-	# If/when adding syslog, note that whilst POSIX specifies no parameters for logger, Linux/Net/Open/FreeBSD/Solaris/Mac all accept -i -p and -t
-
-	# Input:
-	# $1 = log level
-	# $2 = log message
-
-	# Screen printing: all ERROR and WARNING level messages; and everything when in debug mode
-	if [[ ( $1 = "ERROR" || $1 = "WARNING" ) || $DEBUG -ge 1 ]]; then
-		# Use bold only with ERROR/WARNING
-		[[ ( $1 = "ERROR" || $1 = "WARNING" ) ]] && echo -n "${BOLD}" >/dev/stderr
-		echo -n "$1: " >/dev/stderr
-		[[ ( $1 = "ERROR" || $1 = "WARNING" ) ]] && echo -n "${OFFBOLD}" >/dev/stderr
-		echo "$2" >/dev/stderr
-	fi
-	
-	# File logging: all ERROR, WARNING and NOTICE messages
-	if [[ $1 = "ERROR" || $1 = "WARNING" || $1 = "NOTICE" ]]; then
-		# Log if the working directory path is now known, and if the log file location is not a symlink
-		[[ -n $WORKINGDIR_FULL && ! -L $WORKINGDIR_FULL/log ]] && echo "`$DATE +'%Y-%b-%d %T'` [$WORDSHELL_PID] $1: $2" >> "$WORKINGDIR_FULL/log"
-	fi
-
-}
-
-function ws_event_error() {
-	# "Non-urgent failures, these should be relayed to developers or admins; each item must be resolved within a given time."
-	ws_logger ERROR "$1"
-}
-
-function ws_event_warning() {
-	# "Warning messages, not an error, but indication that an error will occur if action is not taken, e.g. file system 85% full - each item must be resolved within a given time."
-	ws_logger WARNING "$1"
-}
-
-function ws_event_notice() {
-	# "Events that are unusual but not error conditions - might be summarized in an email to developers or admins to spot potential problems - no immediate action required."
-	ws_logger NOTICE "$1"
-}
-
-function ws_event_info() {
-	# "Normal operational messages - may be harvested for reporting, measuring throughput, etc. - no action required."
-	# If $2 is 1, then also echo to the screen
-	[[ $2 = "1" ]] && echo "$1"
-	ws_logger INFO "$1"
-}
-
-function ws_event_debug() {
-	# "Info useful to developers for debugging the application, not useful during operations."
-	ws_logger DEBUG "$1"
-}
+source ws_event_functions.sh
 
 if [ "$1" = "--help" -o "$1" = "-?" -o "$1" = "-h" ]; then
 
@@ -313,7 +182,7 @@ ${BOLD}Modes for performing plugin/theme/core operations (mostly mutually exclus
 --editconfig        :	Opens up the WordShell configuration in the configured text editor
 --install           :	Install mode (uploads plugin; add --activate to also activate it)
 --list              :	List installed plugins on the site. If you specify a plugin name, then this is used as an extended regex for matching; use --listexact to require an exact match. When the list is shown, a (-) next to the plugin name implies that the plugin could not be found at wordpress.org (hence either removed, or was third-party).
---login             :	Drops you into a shell or (S)FTP prompt in the site's WordPress installation root 
+--login             :	Drops you into a shell or (S)FTP prompt in the site's WordPress installation root
 --rollback          :	Roll back to the most recently replaced version. If you optionally specify a time, then this will instead then automatically select the version of the plugin installed at that time, as far as we know. If you have GNU date (coreutils) installed, then any string supported by the 'date' command can be used here; e.g. --time='last Tuesday', --time='10 days ago', --time='24 Feb'. Otherwise, you must supply an epoch time. Use --listrollbacks to see what is available.
 --restore           :	Restores the current copy of the indicated entities. This differs from --rollback in that it restores the believed-to-be-current version from our local cache/backup (rather than any previously replaced version). This implies --cache --cache (as otherwise, if the site has been damaged, we would first replicate that damage to the local cache) and then you'd need to head to your backups). In fact, we assume that your site is damaged, and drop all sanity checks related to the currently installed entity and the backup you are replacing it from. With an undamaged site and up-to-date cache, --restore should result in no real changes. When operating upon core, this will restore whatever you backed up (see --justwp). If you wish to restore the backup to a different location (i.e. not the site's regular home), then supply a parameter, e.g. --restore=/var/www/newlocation (accepts both file paths and FTP/SFTP URLs - specify the path for the WordPress base; do not include wp-content/plugins etc.).
 --update            :	Upgrade mode (this is the default if no other mode is specified; you only need to specify it manually if combining with --activate (--activate without --update does not perform a plugin update)). --upgrade is a synonym.
@@ -455,6 +324,11 @@ wordshell mysite,@mygroup,-site2,-@group2,site3 --listsites
 The above command would include the site mysite, then the sites in group mygroup, then remove site2 and all sites in group2, and finally add in site3.
 
 The default working directory is $WORKDIR and the default configuration file is $CONFIGFILE.
+
+${BOLD}Extra options added by mikeybeck:${OFFBOLD}
+--no-maintenance    :	Prevents WordPress going into maintenance mode [when plugin/theme is being updated].  (NOT RECOMMENDED, but y'know...')
+--removecontroller  :	Deletes remote wp-wordshell-controller.php file.
+--filefindmode      :	Searches for remote filenames using regex (e.g. --filefindmode=.*txt to find all filenames containing 'txt', or --findfilemode=.*\.log to find all .log files)
 "
 exit 0;
 fi
@@ -735,6 +609,14 @@ function parse_option() {
 	elif [[ $i = "--ignorenamechange" ]]; then IGNORENAMECHANGE=1
 	elif [[ $i = "--ignoremodifications" ]]; then IGNOREMODIFICATIONS=1
 	elif [ "$i" = "--lftpdryrun" ]; then LFTPDRYRUN=1
+	# Below options added by mikeybeck
+	elif [ "$i" = "--no-maintenance" ]; then NOMAINTENANCE=1
+	elif [ "$i" = "--removecontroller" ]; then mode_switch "removecontroller"
+	elif [[ $i =~ ^--filefindmode=(.*)$ ]]; then mode_switch "filefindmode"; FILEFINDREGEX=${BASH_REMATCH[1]};
+	elif [[ $i =~ ^--filefindinmode=(.*)$ ]]; then mode_switch "filefindinmode"; FILEFINDREGEX=${BASH_REMATCH[1]};
+	elif [[ $i =~ ^--testclimode=(.*)$ ]]; then mode_switch "testclimode"; CLICMD=${BASH_REMATCH[1]};
+	##elif [ "$i" = "--testclimode" ]; then mode_switch "testclimode"; CLICMD=${BASH_REMATCH[1]};
+#	elif [ "$i" = "--testingmode" ]; then mode_switch "testingmode"
 	elif [ -n "$i" ]; then options_abort "Unknown option: $i"
 	#else echo "???: $i"
 	fi
@@ -802,29 +684,7 @@ if [ ! -d "$WORKDIR" ]; then
 	fi
 fi
 
-# These functions allow us to follow the flow more easily when debugging
-function ws_cd() {
-	[[ $DEBUG -ge 1 ]] && ws_event_debug "ws_cd: (`caller`): $1"
-	cd "$1" || abort_die 71 "Failed to cd ($1), pwd=`pwd`, caller=`caller`"
-}
-
-function ws_pushd() {
-	if [[ $DEBUG -ge 1 ]]; then
-		ws_event_debug "ws_pushd: (`caller`): (pwd: `pwd`)"
-		pushd "$1" >/dev/stderr || abort_die 71 "Failed to pushd ($1), pwd=`pwd`"
-	else
-		pushd "$1" >/dev/null || abort_die 71 "Failed to pushd ($1), pwd=`pwd`"
-	fi
-}
-
-function ws_popd() {
-	if [[ $DEBUG -ge 1 ]]; then
-		ws_event_debug "ws_popd: (`caller`): (pwd: `pwd`)"
-		popd >/dev/stderr || abort_die 71 "Failed to popd"
-	else
-		popd >/dev/null || abort_die 71 "Failed to popd"
-	fi
-}
+source ws_cd_push_pop.sh
 
 # Normalise the location of the configuration file, and make absolute (so it can be accessed from any part of the code)
 ws_pushd `dirname "$CONFIGFILE"`
@@ -1119,16 +979,7 @@ REMOTEMANAGER_UPLOADTIME=0
 # Unset because it is consulted by mktemp
 unset TMPDIR
 
-# $1 = prompt
-# $2 = optional file to delete if user aborts
-function check_continue() {
-	read -p "$1" -n 1 DOCONT
-	echo >/dev/stderr
-	if [[ $DOCONT != "c" && $DOCONT != "C" ]]; then
-		[[ -n $2 ]] && rm -f "$2"
-		abort_die 27 "User chose to abort"
-	fi
-}
+source check_continue.sh
 
 # Check reasonable free disk space. df -k -P is POSIX-compatible and has standardised output
 FREESPACE=`(df -k -P . 2>/dev/null || echo 0 0 0 0) | tail -1 | awk '{print $4}'`
@@ -1144,22 +995,7 @@ fi
 ws_event_notice "Invoked: $ORIGINAL_PARAMS"
 [[ $DEBUG -ge 1 ]] && ws_event_debug "WordShell: $VERSION Uname: $UNAME"
 
-function reinvokeself() {
-	# Purpose - re-invoke self, replacing any instances of --everything or --pluginsandthemes with another
-	# $1 : Replacement parameter
-	local LINE
-	for i in $ORIGINAL_PARAMS; do
-		if [[ $i = "--everything" || $i = "-e" || $i = "--pluginsandthemes" ]]; then
-			LINE="$LINE $1"
-		elif [[ ( $i != "--selfinvoked" && $i != "--selfinvoked=e" ) && $i != "--nocountdiskspace" && $i != "--groupbytype" && ( ( $1 != "--plugin" && $1 != "--theme" && $1 != "--content" && $1 != "--database" ) || ( $i != "--justwp" && $i != "--justwpwipeothers" ) ) ]]; then
-			LINE="$LINE $i"
-		fi
-	done
-	ws_pushd "$ORIGDIR"
-	[[ $METAMODE = "everything" ]] && $BASH $0 $LINE --selfinvoked=e --nocountdiskspace
-	[[ $METAMODE != "everything" ]] && $BASH $0 $LINE --selfinvoked --nocountdiskspace
-	ws_popd
-}
+source reinvokeself.sh
 
 DO_MULTIPLE_METAMODE=0
 [[ $METAMODE = "everything" || $METAMODE = "pluginsandthemes" ]] && DO_MULTIPLE_METAMODE=1
@@ -1339,249 +1175,11 @@ if [[ $METAMODE != "everything" && $METAMODE != "pluginsandthemes" ]]; then
 # End of the sanity checks that depend somehow upon the meta-mode
 fi
 
-function url_detectredirection {
-	# Input: $1=URI
-	# Output: returns 0 if no redirection detected, 1 if found; and if so, sets URL_REDIRECTEDURL
+source url_detectredirection.sh
 
-	if [[ -n $CURL ]]; then
-		local CURLOPTS=""
-		local CURL_URL=$1
-		if [[ $1 =~ ^(https?)://([^/]+):([^/]+)\@(.*)$ ]]; then
-			CURLUSER="user = \"${BASH_REMATCH[2]}:${BASH_REMATCH[3]}\"
-"
-			CURL_URL="${BASH_REMATCH[1]}://${BASH_REMATCH[4]}"
-			CURLOPTS="$CURLOPTS --config - --fail --anyauth --netrc-optional"
-		fi
-		local RTMP=`mktemp "$WORKINGDIR_FULL/tmp/URLREDIRECT.XXXXX"`
-		echo $CURLUSER | $CURL $CURLVERB --head $CURLOPTS -o $RTMP "$CURL_URL"
-		CURLRET=$?
-		if [[ $CURLRET -eq 47 ]]; then
-			rm -f $RTMP
-			# Maximum redirections exceeded - try to find the URL
-			return 1
-		fi
-		rm -f $RTMP
-		if [[ $CURLRET -eq 0 ]]; then
-			return 0
-		else
-			[[ $DEBUG -ge 1 ]] && ws_event_info "Curl returned code $CURLRET when trying to detect redirections at $CURL_URL"
-			return 0
-		fi
-	fi
+source url_get.sh
 
-	# TODO - wget / lftp; then use this function in the intended places
-	true
-	cat <<-ENDHERE
-
-$ wget --max-redirect=0 --spider -S http://www.homeedsuccess.co.uk -q
-  HTTP/1.0 301 Moved Permanently
-  Location: http://www.homeedsuccess.co.uk/he
-  Connection: keep-alive
-  Date: Tue, 15 May 2012 10:20:31 GMT
-  Server: lighttpd
-
-$ lftp -c "set xfer:max-redirections 0; open http://www.homeedsuccess.co.uk"
-cd: File moved: 301 Moved Permanently (/ -> http://www.homeedsuccess.co.uk/he)
-Or with -d:
-<--- HTTP/1.1 301 Moved Permanently
-<--- Location: http://www.homeedsuccess.co.uk/he
-<--- Date: Tue, 15 May 2012 10:26:17 GMT
-<--- Server: lighttpd
-<--- 
-cd: File moved: 301 Moved Permanently (/ -> http://www.homeedsuccess.co.uk/he)
-
-curl --head http://www.homeedsuccess.co.uk
-HTTP/1.1 301 Moved Permanently
-Location: http://www.homeedsuccess.co.uk/he
-Date: Tue, 15 May 2012 10:14:14 GMT
-Server: lighttpd
-	ENDHERE
-}
-
-function url_get() {
-# Input: $1=URI If $2=stdout then output on terminal, else (if set) indicates output filename
-# We assume one of LFTP and WGET and CURL is there (caller should check first)
-# FTP requires you to set tryonlycurl
-# $3: Other parameters:
-#   e.g. tryonlylftp, tryonlywget, tryonlycurl
-#   passwarning (if password will be put on command line)
-#   testonly - informs url_get that we wish to test if the server returns an error code. You would likely then also specify $2=stdout and redirect to /dev/null. Note that without this switch, the return code from url_get may be zero in the case of failure; curl does this, returning the error document and suppressing the HTTP error.
-# Returns URLGET_RETURNCODE as the return code, in case you were piping the output somewhere
-
-# Set the command to get the desire output concerning the output selection ($2)
-if [[ $2 = "stdout" ]]; then
-	local LFTP_COM="cat"
-	local URL_GOT="-"
-	local CURL_OUTPUT=""
-elif [[ -n $2 ]]; then
-	local LFTP_COM="get1 -o \"$2\""
-	local URL_GOT=$2
-	local CURL_OUTPUT="-o $2"
-else
-	local LFTP_COM="get1"
-	local URL_GOT=`basename "$1" 2>/dev/null`
-	local CURL_OUTPUT="-O"
-fi
-
-if [[ -n $LFTP && ( -z $3 || $3 = "passwarning" || $3 = "testonly" || $3 =~ "tryonlylftp" ) ]]; then
-	if [[ -n $LFTP ]]; then
-		if [[ $DEBUG -ge 1 ]]; then
-			ws_event_info "url_get: lftp: $1"
-			# We don't put the URL on the command-line in case it contains passwords
-			$LFTP $LFTPDEBUG <<-ENDHERE
-			set xfer:max-redirections 16
-			set ssl:verify-certificate $SSLVERIFY
-			$LFTP_COM "$1"
-			ENDHERE
-		else
-			$LFTP $LFTPDEBUG 2>/dev/null <<-ENDHERE
-			set xfer:max-redirections 16
-			set ssl:verify-certificate $SSLVERIFY
-			$LFTP_COM "$1"
-			ENDHERE
-		fi
-		URLGET_RETURNCODE=$?
-	else
-		URLGET_RETURNCODE=3
-	fi
-elif [[ -n $CURL && ( -z $3 || $3 = "passwarning" || $3 = "testonly" || $3 =~ "tryonlycurl" ) ]]; then
-	if [[ -n $CURL ]]; then
-		[[ $DEBUG -ge 1 ]] && ws_event_info "url_get: curl: $1"
-		# Prior to 1.3.139, --fail was only used with HTTP auth
-		local CURLOPTS="--location"
-		local CURL_URL=$1
-		local CURLUSER=""
-		local CURLRET
-		[[ $1 =~ ^s?ftp ]] && CURLOPTS="$CURL_FTPOPTIONS "
-		# --location forces curl to follow any Location: headers; otherwise the test may fail (a redirect code comes successfully back, though the site you'd get if you followed it may be down)
-		if [[ $1 =~ ^(https?|s?ftps?)://([^/]+):([^/]+)\@(.*)$ ]]; then
-			CURLUSER="user = \"${BASH_REMATCH[2]}:${BASH_REMATCH[3]}\"
-"
-			CURL_URL="${BASH_REMATCH[1]}://${BASH_REMATCH[4]}"
-			CURLOPTS="$CURLOPTS --config -"
-			[[ $1 =~ ^http ]] && CURLOPTS="$CURLOPTS --anyauth --netrc-optional"
-		fi
-		if [[ $DEBUG -ge 2 ]]; then
-			echo 
-			echo $CURLUSER | $CURL --fail $CURLVERB --show-error $CURLOPTS $CURL_OUTPUT "$CURL_URL"
-			CURLRET=$?
-		else
-			if [[ "$MODE" = "downloadonly" || $DEBUG -eq 1 ]]; then
-				echo $CURLUSER | $CURL --fail $CURL_OUTPUT $CURLOPTS -# "$CURL_URL"
-				CURLRET=$?
-			else
-				echo $CURLUSER | $CURL --fail $CURL_OUTPUT $CURLOPTS --silent "$CURL_URL"
-				CURLRET=$?
-			fi
-		fi
-		URLGET_RETURNCODE=$CURLRET
-	else
-		URLGET_RETURNCODE=3
-	fi
-# We try wget last because it is harder to hide username/passwords in the URL with
-elif [[ -n $WGET && ( -z $3 || $3 = "passwarning" || $3 = "testonly" || $3 =~ "tryonlywget" ) ]]; then
-	if [[ -n $WGET ]]; then
-		local WGET_URL=$1
-		if [[ $3 =~ passwarning && $WGET_URL =~ ^(https?|s?ftps?)://([^/]+):([^/]+)\@(.*)$ ]]; then
-			check_continue "${BOLD}Warning:${OFFBOLD} Your system does not have lftp or curl installed, so we are using wget to fetch URLs. However, wget has no easy way to hide passwords contained in URLs. This is not a problem unless your system is multi-user; someone then may be able to spot the password in the system's process table (by running the 'ps' command). To avoid this, you should (if you cannot install lftp or curl) add a line to your .netrc file in your home directory (see 'man netrc' for more information on how to do so; a typical line is 'machine www.example.com<tab>login myusername<tab>password mypassword'). After doing that, you can tell WordShell the URL without needing to include a username or password; wget will pick up the username/password automatically without WordShell needing to pass it. Do you want to continue? (c to continue if this does not matter, e.g. you are on a single user system, or if the entry is already in your .netrc; or any other key to abort): "
-		fi
-		if [[ $DEBUG -ge 1 ]]; then
-			ws_event_info "url_get: wget: $1"
-			$WGET $WGETVERB -O $URL_GOT "$WGET_URL"
-		else
-			if [[ $MODE = "downloadonly" ]]; then
-				$WGET -O $URL_GOT -nv "$WGET_URL"
-			else
-				$WGET -O $URL_GOT -q "$WGET_URL"
-			fi
-		fi
-	else
-		URLGET_RETURNCODE=3
-	fi
-else
-	ws_event_error "No suitable program to fetch the URL was found"
-	URLGET_RETURNCODE=254
-fi
-return $URLGET_RETURNCODE
-}
-
-function url_post() {
-	# Input: $1 = URI, $2 = path, $3 = params
-	# $4 is options (comma-separated):
-	# ignoreexisting: do not use an existing cache file
-	# nocache: do not cache the results (implies ignoreexisting)
-	# preferwget to prefer wget (or preferlftp to not do so - presently default, but you never know...). Or prefercurl
-	# returnfile to return the full file path (not the contents); setvar to put the contents in URLPOST_RESULTS
-	# We assume either lftp or wget or curl is available
-	# Output: sets RETCODE_URLPOST
-	local POST_OPTS=$4
-	# This is needed to use STAT_MODTIME correctly (the spaces in it need recognising as parameter separators)
-	local OLDIFS=$IFS
-	IFS=" 	
-"
-	if [[ -z $CHECKSUM ]]; then
-		# If no checksum binary, then cannot store predictable cache file name, so just use temp file
-		REQHASH_FILE=`mktemp "$WORKINGDIR_FULL/tmp/url-post.XXXXX"`
-		# Since the temp file name was not predictable, do not cache the file (unless the caller requested it)
-		[[ ! $POST_OPTS =~ returnfile ]] && POST_OPTS="$4,nocache"
-	else
-		REQHASH_FILE="$WORKINGDIR_FULL/tmp/post-`echo $1 $2 $3 | $CHECKSUM | cut -d' ' -f1`"
-	fi
-	# Do the download if not cacheing, or if told to ignore existing cache, or cache disabled, or no cache file exists, or if cache file is old
-
-	if [[ $POST_OPTS =~ nocache || $POST_OPTS =~ ignoreexisting || $DISABLECACHE -eq 1 || ! -f $REQHASH_FILE || $((NOWDATE - `$STAT_MODTIME $REQHASH_FILE 2>/dev/null|| echo 0`)) -ge 3600 ]]; then
-
-		if [[ ( $POST_OPTS =~ preferwget && -n $WGET ) || ( -z $CURL && -z $LFTP)  ]]; then
-			[[ $DEBUG -ge 1 ]] && ws_event_info "url_post: wget_post: options=$4: $1 $2 $3"
-			$WGET $WGETVERB --post-data="$3" -O $REQHASH_FILE $1$2
-			RETCODE_URLPOST=$?
-		elif [[ ( $POST_OPTS =~ prefercurl && -n $CURL ) || -z $LFTP ]]; then
-			[[ $DEBUG -ge 1 ]] && ws_event_info "url_post: curl_post: options=$4: $1 $2 $3"
-			CURL_URL=$1
-			CURLUSER=""
-			CURLOPTS=""
-			if [[ $1 =~ ^(https?)://([^/]+):([^/]+)\@(.*)$ ]]; then
-				CURLUSER="user = \"${BASH_REMATCH[2]}:${BASH_REMATCH[3]}\"
-"
-				CURL_URL="${BASH_REMATCH[1]}://${BASH_REMATCH[4]}"
-				CURLOPTS="$CURLOPTS --config -"
-				[[ $1 =~ ^http ]] && CURLOPTS="$CURLOPTS --fail --anyauth --netrc-optional"
-			fi
-			echo $CURLUSER | $CURL $CURLVERB $CURLOPTS --output $REQHASH_FILE --data "$3" --url "${CURL_URL}$2"
-			RETCODE_URLPOST=$?
-		else
-			[[ $DEBUG -ge 1 ]] && ws_event_info "url_post: lftp_post: options=$4: $1 $2 $3"
-# 			if [[ $1 =~ ^(https?)://([^/]+):([^/]+)\@(.*)$ ]]; then
-				# Don't put the URL on the command-line, in case it contains passwords
-				$LFTP $LFTPDEBUG  >"$REQHASH_FILE" <<-ENDHERE
-				set ssl:verify-certificate $SSLVERIFY
-				open $1$2
-				quote post '$2' '$3'"
-				ENDHERE
-				RETCODE_URLPOST=$?
-# 			else
-# 				# http://api.wordpress.org/themes/info/1.0/ returns a 500 error if HEAD is used, as happens with lftp's open command above. So, avoid that if possible by using this method.
-# 				$LFTP $LFTPDEBUG "$1" >"$REQHASH_FILE" <<-ENDHERE
-# 				quote post '$2' '$3'"
-# 				ENDHERE
-# 				RETCODE_URLPOST=$?
-# 			fi
-		fi
-		[[ $DEBUG -ge 1 ]] && ws_event_info "url_post: wrote to file: $REQHASH_FILE"
-	else
-		[[ $DEBUG -ge 1 ]] && ws_event_info "HTTP POST: options=$4: $1 $2 $3: Found valid cache file: $REQHASH_FILE"
-	fi
-	if [[ $POST_OPTS =~ returnfile ]]; then
-		echo $REQHASH_FILE
-	elif [[ $POST_OPTS =~ setvar ]]; then
-		URLPOST_RESULTS=`cat $REQHASH_FILE`
-		rm -f $REQHASH_FILE
-	else
-		cat $REQHASH_FILE
-		[[ $POST_OPTS =~ nocache ]] && rm -f $REQHASH_FILE
-	fi
-	IFS=$OLDIFS
-}
+source url_post.sh
 
 # Deal with --setconfig
 if [ -n "$SETCONFIG" ]; then
@@ -1634,7 +1232,7 @@ function group_mod() {
 	elif [[ $GROUPRESULT_COUNT -gt 0 || $GMODE = "add" ]]; then
 		local FOUNDIT=0
 		local OLDIFS=$IFS
-		IFS=" 
+		IFS="
 "
 		for k in `seq 1 $GROUPRESULT_COUNT`; do
 			if [[ "${GROUPRESULT[$k]}" = "$ADDTHIS" ]]; then
@@ -1664,7 +1262,7 @@ function process_group_define() {
 	GROUPRESULT_COUNT=0
 	for GPART in $GROUPDEF; do
 		if [[ $GPART = "all" ]]; then
-			SITELIST=`grep "^site#" "$CONFIGFILE" | cut -d\# -f2` 
+			SITELIST=`grep "^site#" "$CONFIGFILE" | cut -d\# -f2`
 			IFS="
 "
 			for ADD_THIS in $SITELIST; do
@@ -1824,13 +1422,13 @@ function download_version() {
 APPARENT_NEW_VERSION=""
 
 function make_and_enter() {
-	[[ $DEBUG -ge 2 ]] && ws_event_debug "make_and_enter: (`caller`): $1"	
+	[[ $DEBUG -ge 2 ]] && ws_event_debug "make_and_enter: (`caller`): $1"
 	[[ -d "$1" ]] || mkdir -p "$1"
 	ws_cd "$1"
 }
 
 function make_and_pushd() {
-	[[ $DEBUG -ge 2 ]] && ws_event_debug "make_and_pushd: (`caller`): $1"	
+	[[ $DEBUG -ge 2 ]] && ws_event_debug "make_and_pushd: (`caller`): $1"
 	[[ -d "$1" ]] || mkdir -p "$1"
 	ws_pushd "$1"
 }
@@ -1932,7 +1530,7 @@ function choose_rollback() {
 			SAVE_WHICHROLLBACK=$WHICHROLLBACK
 			if [ "$WHICHROLLBACK" != "most recent" ]; then
 				# Convert what is typed in into a UNIX time
-				if [[ $CAN_STRTOTIME -eq 1 ]]; then 
+				if [[ $CAN_STRTOTIME -eq 1 ]]; then
 					WHICHROLLBACK=`ws_strtotime "$WHICHROLLBACK"`
 					[[ $? -ne 0 ]] && WHICHROLLBACK="error"
 				fi
@@ -2205,7 +1803,7 @@ function ensure_unpacked_core_exists() {
 # Expects to be in working directory
 
 function process_rollbacktime() {
-	# The info that we wanted a rollback is found in $ROLLBACKTIME = x(=no rollback)/n(=show menu)/time string - 
+	# The info that we wanted a rollback is found in $ROLLBACKTIME = x(=no rollback)/n(=show menu)/time string -
 	MODE="normal"
 	if [[ $ROLLBACKTIME != "x" ]]; then
 		[[ $DEBUG -ge 1 ]] && ws_event_info "Looking for installed version from time: $ROLLBACKTIME"
@@ -2273,7 +1871,7 @@ elif [[ $DO_MULTIPLE_METAMODE -eq 0 ]]; then
 					else
 						abort_die 65 "$USEZIP: Download failed"
 					fi
-					
+
 				else
 					abort_die 65 "Cannot download URL: $USEZIP: You need to install one of lftp, curl or wget (run again with --checkrequirements for more information"
 				fi
@@ -2428,7 +2026,7 @@ function version_sort() {
 			NEXTFIRST="1.${BASH_REMATCH[1]}"
 			FIRST_RC=1
 		fi
-		# Is the second an rc? 
+		# Is the second an rc?
 		if [[ $REMSECOND =~ ^-?[rR][cC](.*)$ ]]; then
 			# Is an RC. If first part was not, then first is greater
 			[[ $FIRST_RC -eq 0 ]] && return 0
@@ -2579,9 +2177,9 @@ function get_api_entity_info() {
 			unset API_PLUGIN_VER
 			return 6
 		fi
-		
+
 	fi
-	
+
 	if [ $DISABLEAPI -eq 1 ]; then
 		[[ $DEBUG -ge 1 ]] && ws_event_info "API was disabled via --disableapi"
 		return 5
@@ -3150,6 +2748,7 @@ if [[ $MODE = "downloadonly" && ( $METAMODE = "core" || $METAMODE = "plugin" || 
 	exit $?
 fi
 
+
 function download_remote_manager() {
 	# Purpose: make sure remote manager script is in place at the required minimum protocol version
 	# Input: $1: Minimum protocol version
@@ -3161,7 +2760,7 @@ function download_remote_manager() {
 		NEED_TO_DOWNLOAD=1
 	else
 		local REMOTE_PROTOVER=`grep -E 'proto_version[[:space:]]*=' wp-wordshell-controller.php | head -1 | cut -d\" -f2`
-		if [[ -z $REMOTE_PROTOVER || ! $REMOTE_PROTOVER -ge $NEEDED_REMOTEPROTO ]]; then 
+		if [[ -z $REMOTE_PROTOVER || ! $REMOTE_PROTOVER -ge $NEEDED_REMOTEPROTO ]]; then
 			NEED_TO_DOWNLOAD=1
 			[[ $DEBUG -ge 1 ]] && ws_event_info "wp-wordshell-controller.php found, but insufficiently high protocol version (found:$REMOTE_PROTOVER needed:$NEEDED_REMOTEPROTO); will try to download updated version"
 		fi
@@ -3179,7 +2778,7 @@ function download_remote_manager() {
 	local REMOTE_PROTOVER=`grep -E 'proto_version[[:space:]]*=' wp-wordshell-controller.php | head -1 | cut -d\" -f2`
 	if [[ -z $REMOTE_PROTOVER ]]; then
 		abort_die 85 "wp-wordshell-controller.php found, but could not detect the protocol version (perhaps the file is corrupt)"
-	elif [[ ! $REMOTE_PROTOVER -ge $NEEDED_REMOTEPROTO ]]; then 
+	elif [[ ! $REMOTE_PROTOVER -ge $NEEDED_REMOTEPROTO ]]; then
 		abort_die 85 "wp-wordshell-controller.php found, but insufficiently high protocol version (found:$REMOTE_PROTOVER needed:$NEEDED_REMOTEPROTO)"
 	fi
 
@@ -3193,6 +2792,7 @@ function setup_remote_manager() {
 	# $2 = flags:
 	#   nononce means do not return a nonce (no call is going to be made); simply make sure we are set up
 	#   earlyping means to use the 'earlyping' RPC instead of ping; does not require WordPress to be alive; you should also always specify nononce with this since the remote end will not be able to update its own nonces
+	#   purgecontroller means to delete entire contents of file - added by mikeybeck - REMOVED/UPDATED
 	# Returns 0 upon success, othersize non-zero; also sets the next valid REMOTEMANAGER_NONCE (this is the one to put in wpm-a), REMOTEMANAGER_KEY, SITEURL_HOST and SITEURL_LOCAL and otthers used internally: REMOTEMANAGER_COUNTER, REMOTEMANAGER_UPLOADTIME
 	# Sets GET_REMOTE_MESSAGE if there was a problem
 	local SETUP_RM_FLAGS=$2
@@ -3205,6 +2805,7 @@ function setup_remote_manager() {
 		fi
 		return 0
 	fi
+
 	local REMOTE_MINVER=$1
 	GET_REMOTE_MESSAGE=""
 	if [[ -z $SITEURL ]]; then
@@ -3224,6 +2825,7 @@ function setup_remote_manager() {
 	make_and_enter tmp
 	local CONTROL_TMP=`mktemp ctrl-tmp-php.XXXXX` || return 5
 	REMOTEMANAGER_KEY="${RANDOM}${RANDOM}${RANDOM}"
+
 	echo "<?php \$our_auth = \"$REMOTEMANAGER_KEY\"; ?>" >$CONTROL_TMP
 	if [[ $ACCESSMETHOD =~ ftp ]]; then
 		echo "<?php define('WORDSHELL_FTP_USER', '$FTPUSER');" >>$CONTROL_TMP
@@ -3231,7 +2833,16 @@ function setup_remote_manager() {
 		echo "define('WORDSHELL_FTP_PASS', '$QUOTPASS');" >>$CONTROL_TMP
 		echo "define('WORDSHELL_FTP_HOST', '$FTPHOST'); ?>" >>$CONTROL_TMP
 	fi
-	cat ../wp-wordshell-controller.php >>$CONTROL_TMP
+
+	#if [[ $SETUP_RM_FLAGS =~ purgecontroller ]]; then
+	#	echo "purging..."
+#		echo "" > $CONTROL_TMP
+#	else
+		cat ../wp-wordshell-controller.php >>$CONTROL_TMP
+#	fi
+
+
+
 	if [[ $ACCESSMETHOD = "file" ]]; then
 		[[ $DEBUG -ge 1 ]] && ws_event_info "Copy across remote controller (filesystem)"
 		cp $COPYOPT $CONTROL_TMP "$FILEDIR/wp-wordshell-controller.php"
@@ -3311,6 +2922,8 @@ function setup_remote_manager() {
 	return 0
 }
 
+
+
 # Remote CLI mode
 function remotecli_process() {
 # This function ensures that the remote manager is set up, and then it calls it.
@@ -3371,7 +2984,7 @@ function remotecli_process() {
 		fi
 
 		[[ ( $METAMODE = "core" || $METAMODE = "plugin" ) && $MODE = "normal" && $REMOTECLI_COM = "ping" ]] && return
-		
+
 		REMOTE_DEBUG=""
 		[[ $RDEBUG -ge 1 ]] && REMOTE_DEBUG="&wpm-d=1"
 
@@ -3568,7 +3181,7 @@ function rpc_mirror_get() {
 					[[ $DEBUG -ge 1 ]] && ws_event_info "$LMIRROR_DIR/$LFILE_NAME out of date: will fetch"
 					remotecli_process "getfile:$LFILE_NAME" tellfile
 					local LDIR_TMP=$REMOTECLI_OUTPUT
-					local GET_ANS="`dd if=$LDIR_TMP bs=15 count=1 of=/dev/stdout 2>/dev/null`"
+					local GET_ANS='`dd if=$LDIR_TMP bs=15 count=1 of=/dev/stdout 2>/dev/null`' #Single quotes here so sublime text higlighting doesn't break
 					if [[ $GET_ANS = "AUTHOK:CANTREAD" ]]; then
 						ws_event_warning "$SITE: $LINE: Could not download file (error: file not readable)"
 						rm -f $LDIR_TMP
@@ -3734,6 +3347,7 @@ function ftp_mirror() {
 				rpc_mirror_get "$RDIR" "$RMIRROR_DIR" "$LMIRROR_DIR"
 			fi
 		fi
+
 	elif [[ $MIRRORMODE = "get-delsource" ]]; then
 		if [[ -n $LFTP ]]; then
 			[[ $DEBUG -ge 1 ]] && ws_event_info "ftp_mirror get-delsource lftp: $2 $3 $4 $5"
@@ -3807,7 +3421,7 @@ function ftp_mirror() {
 	else
 		abort_die 79 "$1: Unknown ftp_mirror mode"
 	fi
-	
+
 }
 
 function ftp_checkfileexistence() {
@@ -3832,6 +3446,7 @@ if [[ -n $LFTP ]]; then
 	local LFTPOUTPUT=`mktemp "$WORKINGDIR_FULL/tmp/LFTP_OUT.XXXXX"`
 	# The redirection to /dev/null suppress some debug output, but is needed to also suppress messages like "Access failed: 550 Can't change directory to /web/.maintenance: No such file or directory". To work around this problem, we have these two almost-identical blocks here, plus the option.
 	if [[ $DEBUG -eq 0 && $2 =~ suppress ]]; then
+    echo '1'
 		$LFTP $LFTPDEBUG 2>/dev/null >$LFTPOUTPUT <<-ENDHERE
 		open $ACCESSMETHOD://$FTPHOST
 		user "$FTPUSER" "$FTPPASS"
@@ -3840,6 +3455,7 @@ if [[ -n $LFTP ]]; then
 		cls -d "$FILE""
 		ENDHERE
 	else
+        echo '2'
 		$LFTP $LFTPDEBUG >$LFTPOUTPUT <<-ENDHERE
 		open $ACCESSMETHOD://$FTPHOST
 		user "$FTPUSER" "$FTPPASS"
@@ -3848,6 +3464,7 @@ if [[ -n $LFTP ]]; then
 		cls -d "$FILE""
 		ENDHERE
 	fi
+        echo '3'
 	CLS_OUTPUT=`cat $LFTPOUTPUT`
 	rm -f $LFTPOUTPUT
 	[[ $DEBUG -ge 1 ]] && ws_event_debug "Output=$CLS_OUTPUT when looking for file=$FILE"
@@ -4082,7 +3699,7 @@ function maintenance_mode() {
 				else
 					echo "<?php global \$wordshell_maintenance; \$upgrading = (\$wordshell_maintenance === true ) ? 0 : $MAINTENANCE_TIME; ?>" >.maintenance
 					[[ $DEBUG -ge 1 ]] && ws_event_info "Entering maintenance mode ($ACCESSMETHOD://$FTPUSER@$FTPHOST/$FTPDIR/.maintenance)"
-					
+
 					if [[ -n $LFTP || $CURL_CAN_ACCESSMETHOD -eq 1 ]]; then
 						ftp_putfile .maintenance
 					else
@@ -4117,7 +3734,7 @@ function maintenance_mode() {
 				ws_event_notice "$SITE: Left maintenance mode"
 			fi
 		fi
-		
+
 	fi
 
 }
@@ -4201,13 +3818,16 @@ if [[ $MODE = "listsites" ]]; then
 		list_site "^d?site#"
 	elif [[ $SITECOUNT -ge 2 ]]; then
 		for i in `seq 1 $SITECOUNT`; do
-			list_site "^d?site#${SITES[$i]}#" 
+			list_site "^d?site#${SITES[$i]}#"
 		done
 	else
 		list_site "^d?site#$SITE#"
 	fi
 	exit
 fi
+
+
+
 
 function show_disk_space() {
 	echo -n "${BOLD}Disk space in use ($WORKDIR):${OFFBOLD} "
@@ -4390,7 +4010,7 @@ if [[ $SITECOUNT -ge 2 && ( $DO_MULTIPLE_METAMODE -eq 0 || $GROUPBYTYPE -eq 0 ) 
 		site_reinvoke "^site#"
 	else
 		for i in `seq 1 $SITECOUNT`; do
-			site_reinvoke "^site#${SITES[$i]}#" 
+			site_reinvoke "^site#${SITES[$i]}#"
 		done
 	fi
 
@@ -4816,11 +4436,15 @@ function set_ftp_encryption_options() {
 		ACCESSMETHOD="ftp"
 	fi
 
+    echo "setting ftp options 1"
+
 	# By this point, we have ascertained whether we are using encryption with FTP or not.
 	# This next check should be redundant, as the code above already does not allow it.
 	if [[ $DISABLEFTPTLS -eq 1 && $REQUIREFTPTLS -eq 1 ]]; then
 		abort_die 78 "Conflicting options; options were detected to both mandate and forbid FTP encryption"
 	fi
+
+    echo "setting ftp options 2"
 	# Now, write the LFTP configuration file accordingly and set the curl options properly
 	LFTPCONF_TMP=`mktemp tmp/lftp-cfg.XXXXX`
 	grep -v "set ftp:ssl-allow" lftp/rc | grep -v "set ftp:ssl-force" > $LFTPCONF_TMP
@@ -4842,10 +4466,13 @@ function set_ftp_encryption_options() {
 		# Means, "try ssl; revert to plain if not supported"
 		CURL_FTPOPTIONS="$CURL_FTPOPTIONS --ftp-ssl"
 	fi
+
+    echo "setting ftp options 3"
 	mv $LFTPCONF_TMP lftp/rc
 	[[ $DEBUG -ge 2 && -n $LFTP ]] && ws_event_debug "LFTP configuration file dump follows: `cat lftp/rc`"
 	[[ $DEBUG -ge 2 && $CURL_CAN_ACCESSMETHOD ]] && ws_event_debug "Curl FTP command line options to use: $CURL_FTPOPTIONS"
 
+    echo "setting ftp options 4"
 }
 
 function get_ftp_details() {
@@ -4871,6 +4498,7 @@ if [[ $ACCESSMETHOD =~ ftp ]]; then
 	ORIGINAL_ACCESSMETHOD=$ACCESSMETHOD
 	ORIGINAL_REQUIREFTPTLS=$REQUIREFTPTLS
 	ORIGINAL_DISABLEFTPTLS=$DISABLEFTPTLS
+    echo "setting ftp options"
 	set_ftp_encryption_options
 fi
 
@@ -4878,9 +4506,13 @@ fi
 
 # Directory existence to test for
 # Default that should work with any new meta-modes added in future
+echo "checking sanity"
+
 CHECK_SANITY="wp-includes"
 [[ $METAMODE = "plugin" || $METAMODE = "theme" ]] && CHECK_SANITY="$CONTENTDIR/${METAMODE}s"
 [[ $METAMODE = "content" ]] && CHECK_SANITY="$CONTENTDIR"
+
+echo "sanity check complete"
 
 function core_install_consistency_check() {
 	# --core --install: need to verify that this location is actually the same as that given in SITEURL (test an upload)
@@ -4925,6 +4557,8 @@ if [[ ( $MODE != "restore" || -z $RESTOREPATH ) && $ACCESSMETHOD =~ ftp ]]; then
 		fi
 	done
 
+echo "verifying.."
+
 	# Verify that this location is actually the same as that given in SITEURL (test an upload)
 	[[ $METAMODE = "core" && $MODE = "install" ]] && core_install_consistency_check
 
@@ -4953,6 +4587,9 @@ if [[ ( $MODE != "restore" || -z $RESTOREPATH ) && $ACCESSMETHOD =~ ftp ]]; then
 		[[ $TMP_ALLFILES = "n" || $TMP_ALLFILES = "N" ]] && echo "siteopt#$SITESAVE#--justwp" >>"$CONFIGFILE"
 	fi
 
+    echo "site saved"
+
+
 	# Login mode - drop into this before doing anything else (we want to be able to drop in even (especially) if things are broken)
 	# Script then terminates - login_mode does not return
 	[[ $MODE = "login" ]] && ftp_login_mode
@@ -4962,6 +4599,9 @@ if [[ ( $MODE != "restore" || -z $RESTOREPATH ) && $ACCESSMETHOD =~ ftp ]]; then
  		CACHE=1
  		SYNC=0
 	fi
+
+    echo "x1"
+
 
 	# Sanity check existence of remote site, if appropriate
 	if [[ $FTP_FOUND -eq 1 ]]; then
@@ -5054,6 +4694,152 @@ fi
 
 # Setup finished: now we have the site and its access details, and they are sanity-checked; we can start processing most modes
 
+
+
+
+
+
+
+
+################################################
+#
+# Stuff added by mikeybeck
+#
+################################################
+
+
+
+
+function remotecmd() {
+	#
+	#local LISTOFFILES=$1
+
+
+	if [ -z "$2" ]; then
+#		if [[ $MODE = "filefindmode" ]]; then
+
+		[[ $DEBUG -ge 1 ]] && ws_event_info "Remote cmd = filefind:$1"
+		#exit
+		remotecli_process "filefind:$1"
+#		fi
+	else
+		[[ $DEBUG -ge 1 ]] && ws_event_info "Remote cmd = filefind:$1:$2"
+		#exit
+		remotecli_process "filefind:$1:$2"
+	fi
+
+#	if [[ $MODE = "filefindinmode" ]]; then
+#		remotecli_process "filefindin:$1"
+#	fi
+		#if [[ $REMOTECLI_OUTPUT =~ :DELETED: ]]; then
+		#	[[ $DEBUG -ge 2 ]] && ws_event_info "Successfully deleted file: $DELTHISFILE"
+		#else
+		#	[[ $DEBUG -ge 1 ]] && ws_event_warning "Tried to delete file $DELTHISFILE, but failed (output was: $REMOTECLI_OUTPUT)"
+		#fi
+	#fi
+}
+
+function remotecli() {
+	#
+	#local LISTOFFILES=$1
+
+
+	if [ -z "$2" ]; then
+
+		[[ $DEBUG -ge 1 ]] && ws_event_info "Remote cmd = remotecli:$1"
+
+		remotecli_process "remotecli:$1"
+
+	fi
+
+}
+
+
+
+# Added by mikeybeck
+if [[ $MODE = "testclimode" ]]; then
+
+
+#	if [[ $FILEFINDREGEX = "*" ]]; then
+#		REGEX=$FILEFINDREGEX
+#	fi
+
+#	echo "Searching $SITEURL for files"
+#	echo  "Using regex /$REGEX/"
+	echo "running cmd... $CLICMD"
+
+	remotecli $CLICMD
+	exit
+
+fi
+
+# Added by mikeybeck
+if [[ $MODE = "filefindmode" ]]; then
+
+
+	# Check for caret ^ symbol
+	if [[ $FILEFINDREGEX == *"^"* ]]; then
+		# Do search inside files using string after ^
+		FINDSTRING=${FILEFINDREGEX#*^}
+		REGEX=${FILEFINDREGEX%^*}
+
+		# If regex is * then search for everything
+		if [[ $REGEX = "*" ]]; then
+				REGEX="[\s\S]*"
+		fi
+
+		echo "Searching $SITEURL for files"
+		echo "Using regex /$REGEX/"
+		echo "Containing string: $FINDSTRING"
+        ## .*txt would find all txt files
+		remotecmd $REGEX $FINDSTRING
+		exit
+	fi
+
+	# If regex is * then search for everything
+	if [[ $FILEFINDREGEX = "*" ]]; then
+			REGEX="[\s\S]*"
+	else
+		REGEX=$FILEFINDREGEX
+	fi
+
+	echo "Searching $SITEURL for files"
+	echo  "Using regex /$REGEX/"
+    # .*txt would find all txt files
+	remotecmd $REGEX
+	exit
+
+fi
+
+
+
+# Delete remote wp controller.  Added by mikeybeck
+if [[ $MODE = "removecontroller" ]]; then
+				ftp_deletefile 'wp-wordshell-controller.php'
+				echo "Remote wp-wordshell-controller.php file deleted!"
+				#setup_remote_manager $REMOTE_MANAGER_MINIMUM_PROTOCOL purgecontroller
+				exit
+fi
+
+
+
+
+
+################################################
+#
+# END of stuff added by mikeybeck
+#
+################################################
+
+
+
+
+
+
+
+
+
+
 # Apply the filters from --fast (exit if nothing to do) (these are never set with --core)
 if [[ ( $MODE = "delete" || $MODE = "normal" || $MODE = "restore" || $MODE = "rollback" || $MODE = "list" || $MODE = "checkmodifications" ) && ( $FAST -eq 1 ) ]]; then
 	if [[ ! -e "$WORKINGDIR_FULL/current/$SITE/$METAMODE_DIR/$PLUGIN" ]]; then
@@ -5061,6 +4847,11 @@ if [[ ( $MODE = "delete" || $MODE = "normal" || $MODE = "restore" || $MODE = "ro
 		exit
 	fi
 fi
+
+
+
+
+
 
 # Maintenance mode
 if [[ $MODE = "entermaintenance" ]]; then
@@ -5236,7 +5027,7 @@ function sync_core() {
 		local THEVERSION=$REMOTE_WPVERSION
 	else
 		remotecli_process wpversion setvar
-		if [[ ! $REMOTECLI_OUTPUT =~ AUTHOK:WPVERSION:([0-9](\.[0-9]+)+(-(alpha|beta|RC[0-9]?(-[0-9]+)))?)$ ]]; then
+		if [[ ! $REMOTECLI_OUTPUT =~ ^AUTHOK:WPVERSION:([0-9](\.[0-9]+)+(-(alpha|beta|RC[0-9]?(-[0-9]+)))?)$ ]]; then
 			ws_event_error "Could not find the remote version number (output was: $REMOTECLI_OUTPUT)"
 			return
 		fi
@@ -5476,6 +5267,7 @@ if [[ $METAMODE = "database" && $MODE = "searchandreplace" ]]; then
 	fi
 	exit
 fi
+
 
 if [[ $MODE = "listrollbacks" ]]; then
 	managerollbacks list
@@ -5761,6 +5553,9 @@ function show_theentities() {
 	# Input: make sure we are cd-ed into a directory of the appropriate (METAMODE) entities
 	# $1 : slug to match - or if empty, show them all
 	# At present, use of this parameter (i.e. non-empty) implies we are in list mode, so we can assume that
+
+	# mikeybeck's mods: save current entities list to file with index numbers
+
 	local SHOWONLY=$1
 	[[ $DEBUG -ge 1 ]] && ws_event_debug "show_theentities: $SHOWONLY (pwd: `pwd`, caller: `caller`)"
 	FOUNDWANTED=0
@@ -5773,28 +5568,58 @@ function show_theentities() {
 		IFS="
 	"
 		# Find the plugins
+		echo -n > "../entities.txt"
+		ENT_INDEX=0
+		#ENT_NUM=00
 		for i in `find . -maxdepth 1 -iregex './[a-z0-9].*' | sort`; do
 			# This could match the directory name (e.g. "akismet" from plugin akismet/akismet.php) or the file name (e.g. hello.php for "Hello Dolly")
 			PLUGDIR=`echo "$i" | cut -d/ -f2`
+
+			if (( $ENT_INDEX < 10 )); then
+				ENT_NUM="0${ENT_INDEX}"
+			else
+				ENT_NUM="$ENT_INDEX"
+			fi
+
 			# Plugins in directories
 			if [[ -d $i ]]; then
 				# Enter the plugin's directory
 				ws_pushd "$i"
+
+				if [[ $(showentity_thisdir "$SHOWONLY") ]]; then
+					# Print entity index number
+					echo -n "$ENT_NUM  "
+					# Add entity number and remove ./ from plugin name
+					echo "$ENT_NUM" ${i#./} >> ../../entities.txt
+					ENT_INDEX=$((ENT_INDEX+1))
+				fi
+
 				# See what's in this directory
 				showentity_thisdir "$SHOWONLY"
 				ws_popd
 			# Plugins in files
 			elif [[ $METAMODE = "plugin" && $i =~ .*\.php$ ]]; then
+
+				if [[ $(showentity_thisdir "$SHOWONLY" file) ]]; then
+					# Print entity index number
+					echo -n "$ENT_NUM  "
+					echo "$ENT_NUM" file >> ../../entities.txt
+					ENT_INDEX=$((ENT_INDEX+1))
+				fi
+
 				showentity_thisdir "$SHOWONLY" file
 			else
 				[[ $DEBUG -ge 1 ]] && ws_event_notice "$i: Unknown entity found in ${METAMODE}s directory"
 			fi
+
 		done
 		if [[ $WARNMISSING -eq 1 && $FOUNDWANTED -eq 0 && $MODE = "list" ]]; then
 			ws_event_warning "no ${METAMODE} found (site: $SITE)"
 		fi
 		IFS="$OLDIFS"
 	fi
+
+	echo $PWD
 }
 
 HAVESHOWNPLUGS=0
@@ -5944,6 +5769,9 @@ while [[ ( -z $PLUGIN || ! -e "$PLUGIN" ) && $MODE != "install" && $PLUGIN_OR_TH
 	fi
 	if [ $HAVESHOWNPLUGS -eq 0 ]; then
 		echo "${METAMODE_CAP}s in use on this site:"
+
+		#TODO: Get number of directories in local plugin folder and show progress bar after each plugin is checked
+
 		show_theentities
 		HAVESHOWNPLUGS=1
 	fi
@@ -5953,12 +5781,17 @@ while [[ ( -z $PLUGIN || ! -e "$PLUGIN" ) && $MODE != "install" && $PLUGIN_OR_TH
 	read -p "${METAMODE_CAP} to $PLACTION (prepend with changelog/description to show info; Ctrl-C to quit): " PLUGIN
 	CREGEX="^c(hangelog)? (\S+)$"
 	DREGEX="^d(escription)? (\S+)$"
+	INT='^[0-9]+$'
 	if [[ $PLUGIN =~ $CREGEX ]]; then
 		get_api_changelog ${BASH_REMATCH[2]} changelog
 		PLUGIN=""
 	elif [[ $PLUGIN =~ $DREGEX ]]; then
 		get_api_changelog ${BASH_REMATCH[2]} description
 		PLUGIN=""
+	# Mikey's mods: Match plugin/theme number with number from entities file; get plugin name from there
+	elif [[ $PLUGIN =~ $INT ]]; then
+		PLUGIN=`sed -n "s/$PLUGIN //p" ../entities.txt`
+		echo "$PLUGIN" "selected"
 	elif [ ! -d "$PLUGIN" ]; then
 		ws_event_error "${METAMODE_CAP} not found, please try again"
 		PLUGIN=""
@@ -6008,7 +5841,7 @@ if [[ $FOUNDPLUG -eq 1 && ( ( $MODE = "normal" && $ROLLBACKTIME = "x" && $IGNORE
 	[[ $METAMODE != "core" ]] && make_and_enter ../../../../customimports.$METAMODE
 	make_and_enter ../fromwporg.$METAMODE
 	THE_PRISTINE_ZIP=""
-	
+
 	if [[ -s "$PRISTINE_FILENAME" ]]; then
 		# Sanity-check it
 		TMP_ZIPSIZE=`get_file_size "$PRISTINE_FILENAME"`
@@ -6017,7 +5850,7 @@ if [[ $FOUNDPLUG -eq 1 && ( ( $MODE = "normal" && $ROLLBACKTIME = "x" && $IGNORE
 			rm -f $PRISTINE_FILENAME
 		fi
 	fi
-	
+
 	if [[ -s ../customimports.$METAMODE/$PRISTINE_FILENAME ]]; then
 		THE_PRISTINE_ZIP="customimports.$METAMODE/$PRISTINE_FILENAME"
 		[[ $DEBUG -ge 1 ]] && ws_event_info "Copy of pristine zip found in customimports ($THE_PRISTINE_ZIP)"
@@ -6050,7 +5883,7 @@ if [[ $FOUNDPLUG -eq 1 && ( ( $MODE = "normal" && $ROLLBACKTIME = "x" && $IGNORE
 						url_browser "https://wordpress.org/download"
 					fi
 				else
-					echo "Cancelled web browser: user declined" 
+					echo "Cancelled web browser: user declined"
 				fi
 			else
 				ws_event_error "Could not find a working w3m, elinks or lynx to use (run with --checkrequirements or --debug for more information)"
@@ -6110,15 +5943,9 @@ if [[ $FOUNDPLUG -eq 1 && ( ( $MODE = "normal" && $ROLLBACKTIME = "x" && $IGNORE
 				LOCAL_COPY_TO_EXAMINE="../../../current/$SITE/core"
 				# Only -b -r are POSIX. But -u and -N are in Mac OS X, FreeBSD and GNU and OpenSolaris (2009). -B -d and are in MacOSX/FreeBSD/GNU
 				DIFF_OPTIONS="-Bburd"
-				# Obviously, this isn't proper internationalisation, and only works with English/French
-				$DIFF -Bburd . "$LOCAL_COPY_TO_EXAMINE" | grep -v "^Only in" | grep -v "^Seulement dans" >$DIFFTMP
-				# Diff will return 1 if there are differences (including 'Only in...'); grep -v will return 1 if there were suppressed lines, or 0 if there was not (we don't expect any other code)
-				# Dec 2016 - now we just check for no output, because of the double grep
-				if [[ -s $DIFFTMP ]]; then
-					DIFF_RET=1
-				else
-					DIFF_RET=0
-				fi
+				$DIFF -Bburd . "$LOCAL_COPY_TO_EXAMINE" | grep -v "^Only in " >$DIFFTMP
+				# Diff will return 1 if there are differences (including 'Only in...'); grep will return 0 if there was output, or 1 if there was (we don't expect any other code)
+				DIFF_RET=$((1-$?))
 				AUTOPATCH_STRIP=6
 			else
 				# Back to working directory. The moving around is because it seemed to silence a patch warning.
@@ -6147,7 +5974,7 @@ if [[ $FOUNDPLUG -eq 1 && ( ( $MODE = "normal" && $ROLLBACKTIME = "x" && $IGNORE
 				[[ $MODE != "checkmodifications" ]] && echo -n "${BOLD}WARNING:${OFFBOLD} "
 				[[ $MODE != "checkmodifications" || $DEBUG -ge 1 ]] && echo "$SITE: $PLUGIN: The $METAMODE has apparently been modified from its original state."
 				# $DIFFACTION is emptied above
-				[[ $DEBUG -ge 1 ]] && ws_event_debug "Diff command was: $DIFF $DIFF_OPTIONS . $LOCAL_COPY_TO_EXAMINE ; cd = `pwd` ; return code = $DIFF_RET"
+				[[ $DEBUG -ge 1 ]] && ws_event_debug "Diff command was: $DIFF $DIFF_OPTIONS . $LOCAL_COPY_TO_EXAMINE ; cd = `pwd`"
 				unset DIFFACTION
 				if [ $AUTOPATCH -eq 1 ]; then
 					DIFFACTION="p"
@@ -6671,7 +6498,12 @@ if [[ $METAMODE != "content" && ( $METAMODE != "core" || $MODE != "install" ) ]]
 		if [[ $METAMODE = "core" && $MODE = "normal" && $FILEMETHOD -eq 0 ]]; then
 			maintenance_mode waitclear
 		else
-			maintenance_mode enterwait
+			if [[ $NOMAINTENANCE == 1 ]]; then
+				echo "--no-maintenance mode selected!"
+				echo "Not bothering with maintenance mode.  Would be entering now though."
+			else
+				maintenance_mode enterwait
+			fi
 		fi
 	else
 		ws_event_info "Dry run mode: skipped putting site into maintenance mode"

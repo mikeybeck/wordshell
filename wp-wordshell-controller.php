@@ -1,7 +1,8 @@
 <?php
-$wordshell_version = "0.4.6 (2016-05-28)";
-
-# This is the helper script. You do not run it directly. You can place it in ~/.wordshell (or wherever you configured WordShell to use).
+// $our_auth = "Nd7DCOjAXSxdf13";
+?>
+<?php
+$wordshell_version = "0.4.4 (2015-10-03)";
 
 # Keep this as a monotically increasing integer for simplicity
 # This line should not have its format changed, nor similar lines added before it; it is read from bash
@@ -16,6 +17,7 @@ $proto_version = "22";
 /*
 This file is part of WordShell, the command-line management tool for WordPress (www.wordshell.net)
 (C) David Anderson 2012-
+with modifications by mikeybeck 2016-
 
 Remote management helper
 
@@ -123,6 +125,85 @@ if (isset($_POST['wpm-c']) && $_POST['wpm-c'] == "earlyping") {
 	exit;
 }
 
+
+
+#################################################################
+#
+# Added by mikeybeck...
+# This runs before WordPress itself is loaded.
+#
+#################################################################
+
+// Search for files using regex
+// Input (wpm-c) is something like testing:.*txt - this will search for all files ending in .txt
+
+if (isset($_POST['wpm-c'])) {
+
+    // Get command (i.e. string before colon in wpm-c variable)
+    $wpmc_arr = explode(":", $_POST['wpm-c'], 3);
+
+#    var_dump($wpmc_arr);
+
+    $command = $wpmc_arr[0];
+
+    if ($command == "filefind") {
+
+        $regex = $wpmc_arr[1];
+
+        $search_string = null;
+        if (count($wpmc_arr) > 2) {
+            $search_string = $wpmc_arr[2];
+        }
+        
+        function rsearch($folder, $pattern) {
+            $dir = new RecursiveDirectoryIterator($folder);
+            $ite = new RecursiveIteratorIterator($dir);
+            $files = new RegexIterator($ite, $pattern, RegexIterator::GET_MATCH);
+            $fileList = array();
+            foreach($files as $file) {
+                $fileList = array_merge($fileList, $file);
+            }
+            return $fileList;
+        }
+
+        #echo getcwd() . "\n";
+
+        #echo $regex;
+
+        $testsearch = rsearch(getcwd(), '/'. $regex .'/');
+
+        #var_dump($testsearch);
+
+        if ($search_string) {
+            foreach ($testsearch as $file) {
+                if( strpos(file_get_contents($file), $search_string) !== false) {
+                    // do stuff
+                    echo 'found ';
+                    echo $file . "\n";
+                }
+            }
+        } else {
+            foreach ($testsearch as $file) {
+                echo $file . "\n";
+            }
+        }
+
+        #echo "AUTHOK:PONG:$proto_version:".phpversion().":$wordshell_version";
+        exit;
+    } 
+}
+
+
+
+#################################################################
+#
+# End stuff added by mikeybeck...
+#
+#################################################################
+
+
+
+
 global $wp_filter, $merged_filters;
 $wp_filter['option_active_plugins'][10]['wordshell_pre_option_active_plugins'] = array('function' => 'wordshell_pre_option_active_plugins', 'accepted_args' => 1);
 unset( $merged_filters['option_active_plugins'] );
@@ -181,6 +262,7 @@ function wpmanagercontroller_diefilter() {
 add_filter('wp_die_handler', 'wpmanagercontroller_diefilter');
 
 $wordshell_command = $_POST['wpm-c'];
+
 if ($wordshell_debug) { header("X-WP-Controller-Command: ".urlencode($wordshell_command)); }
 
 # Send first part of response
@@ -189,13 +271,13 @@ if (substr($wordshell_command,0,8) != "getfile:" && $wordshell_command != "dbdum
 if (!isset($_POST['wpm-c'])) { wordshell_exit("ERROR:No command sent"); }
 
 # Now invoke the requested function
-if ( preg_match("/^([a-z0-9]+):(.*)$/",$wordshell_command,$cmatch) 	) {
+if ( preg_match("/^([a-z5]+):(.*)$/",$wordshell_command,$cmatch) 	) {
 	$wordshell_command = $cmatch[1];
 	$param = $cmatch[2];
 	if (function_exists('wordshell_wpc_param_'.$wordshell_command)) {
 		call_user_func('wordshell_wpc_param_'.$wordshell_command,$param);
 	} else {
-		wordshell_exit("ERROR:Unknown command:".$wordshell_command,1);
+		wordshell_exit("ERROR:Unknown command",1);
 	}
 } else {
 	# "list" is a deprecated alias for "listplugins"; remove after a while
@@ -312,9 +394,9 @@ function wordshell_wpc_param_userdelid($what, $reassign = 'novalue') {
 }
 
 function wordshell_wpc_param_dbsearchreplace($what) {
-	if (preg_match('/^(.*):([^:]*)$/', $what, $fmatches)) {
+	if (preg_match('/^(.*):([^:]+)$/', $what, $fmatches)) {
 		$what = $fmatches[1];
-		$tables = empty($fmatches[2]) ? array() : explode(',', $fmatches[2]);
+		$tables = explode(',', $fmatches[2]);
 	} else {
 		$tables = array();
 	}
@@ -374,7 +456,7 @@ function _wordshell_searchreplace($from, $to, $upon_tables = array()) {
 	}
 
 	if ( empty( $tables ) ) {
-		echo 'ERR:The specified database table(s) could not be found';
+		echo 'ERR:No database tables were found';
 		die;
 	}
 
@@ -1115,6 +1197,7 @@ function wordshell_wpc_coreupgrade() {
 	wp_version_check();
 	$from_api = get_site_transient( 'update_core' );
 	if ( empty( $from_api->updates ) ) { $update = false; } else { list( $update ) = $from_api->updates; }
+
 	require_once(ABSPATH.'wp-admin/includes/upgrade.php');
 	require_once(ABSPATH.'wp-admin/includes/class-wp-upgrader.php');
 
@@ -1726,3 +1809,6 @@ function wordshell_sql_addslashes($a_string = '', $is_like = false) {
 	else $a_string = str_replace('\\', '\\\\', $a_string);
 	return str_replace('\'', '\\\'', $a_string);
 } 
+
+
+?>
