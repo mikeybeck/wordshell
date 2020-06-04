@@ -16,6 +16,7 @@ $proto_version = "22";
 /*
 This file is part of WordShell, the command-line management tool for WordPress (www.wordshell.net)
 (C) David Anderson 2012-
+with modifications by mikeybeck 2016-
 
 Remote management helper
 
@@ -122,6 +123,85 @@ if (isset($_POST['wpm-c']) && $_POST['wpm-c'] == "earlyping") {
 	echo "AUTHOK:PONG:$proto_version:".phpversion().":$verinfo:$wordshell_version";
 	exit;
 }
+
+
+
+#################################################################
+#
+# Added by mikeybeck...
+# This runs before WordPress itself is loaded.
+#
+#################################################################
+
+// Search for files using regex
+// Input (wpm-c) is something like testing:.*txt - this will search for all files ending in .txt
+
+if (isset($_POST['wpm-c'])) {
+
+    // Get command (i.e. string before colon in wpm-c variable)
+    $wpmc_arr = explode(":", $_POST['wpm-c'], 3);
+
+#    var_dump($wpmc_arr);
+
+    $command = $wpmc_arr[0];
+
+    if ($command == "filefind") {
+
+        $regex = $wpmc_arr[1];
+
+        $search_string = null;
+        if (count($wpmc_arr) > 2) {
+            $search_string = $wpmc_arr[2];
+        }
+        
+        function rsearch($folder, $pattern) {
+            $dir = new RecursiveDirectoryIterator($folder);
+            $ite = new RecursiveIteratorIterator($dir);
+            $files = new RegexIterator($ite, $pattern, RegexIterator::GET_MATCH);
+            $fileList = array();
+            foreach($files as $file) {
+                $fileList = array_merge($fileList, $file);
+            }
+            return $fileList;
+        }
+
+        #echo getcwd() . "\n";
+
+        #echo $regex;
+
+        $testsearch = rsearch(getcwd(), '/'. $regex .'/');
+
+        #var_dump($testsearch);
+
+        if ($search_string) {
+            foreach ($testsearch as $file) {
+                if( strpos(file_get_contents($file), $search_string) !== false) {
+                    // do stuff
+                    echo 'found ';
+                    echo $file . "\n";
+                }
+            }
+        } else {
+            foreach ($testsearch as $file) {
+                echo $file . "\n";
+            }
+        }
+
+        #echo "AUTHOK:PONG:$proto_version:".phpversion().":$wordshell_version";
+        exit;
+    } 
+}
+
+
+
+#################################################################
+#
+# End stuff added by mikeybeck...
+#
+#################################################################
+
+
+
 
 global $wp_filter, $merged_filters;
 $wp_filter['option_active_plugins'][10]['wordshell_pre_option_active_plugins'] = array('function' => 'wordshell_pre_option_active_plugins', 'accepted_args' => 1);
