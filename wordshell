@@ -2692,7 +2692,7 @@ function get_api_entity_info() {
 			local URL_STRING="${METAMODE}s=a:1:{s:$PLUGFILELEN:\"$PLUGFILE\";a:6:{s:4:\"Name\";s:$PLUGNAMELEN:\"$PLUGNAME\";s:7:\"Version\";s:$PLUGVERLEN:\"$PLUGVER\";s:5:\"Title\";s:$PLUGNAMELEN:\"$PLUGNAME\";s:8:\"Template\";s:$PLUGFILELEN:\"$PLUGNAME\";s:10:\"Stylesheet\";s:$PLUGFILELEN:\"$PLUGFILE\";s:12:\"Parent Theme\";s:0:\"\";}}"
 		fi
 		if [[ $CAN_URLGET -eq 1 ]]; then
-			url_post http://api.wordpress.org /${METAMODE}s/update-check/1.0/ "$URL_STRING" >$SERIALTMP
+			url_post http://api.wordpress.org /${METAMODE}s/update-check/1.0/ "$URL_STRING" preferwget,prefercurl >$SERIALTMP
 		else
 			ws_event_error "No working lftp, wget or curl was found; could not get ${METAMODE} API info"
 		fi
